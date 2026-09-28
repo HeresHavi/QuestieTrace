@@ -87,7 +87,7 @@ local function NewRuntime(trackerFiles)
   env._G = env
   env.QuestLog = {}
   env.SlashCmdList = {}
-  env.QuestieTrace = { schemaVersion = 11, settings = { autoStart = false, dataCollectionConsent = true } }
+  env.QuestieTrace = { schemaVersion = 12, settings = { autoStart = false, dataCollectionConsent = true } }
   env.QuestieTraceCharacter = { sessions = {} }
   runtime.printedMessages = {}
   env.print = function(...)
@@ -280,7 +280,7 @@ local function TestSessionContract()
 
   runtime.core.StartCapture("new capture")
   local current = Session(runtime)
-  assert(current.schemaVersion == 11 and current.recordingContractVersion == 1,
+  assert(current.schemaVersion == 12 and current.recordingContractVersion == 1,
     "New captures need contract provenance without a storage schema bump")
   runtime.core.SaveCapture()
   assert(env.QuestieTraceCharacter.sessions[2] == current and current.recordingContractVersion == 1,
@@ -481,7 +481,7 @@ local function TestExportSerializationRoundTrips()
   env._G = env
   env.QuestLog = {}
   env.SlashCmdList = {}
-  env.QuestieTrace = { schemaVersion = 11, settings = { autoStart = false, dataCollectionConsent = true } }
+  env.QuestieTrace = { schemaVersion = 12, settings = { autoStart = false, dataCollectionConsent = true } }
   env.QuestieTraceCharacter = { sessions = {} }
   env.print = function() end
   env.GetTime = function() return runtime.now end
