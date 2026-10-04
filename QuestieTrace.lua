@@ -616,10 +616,9 @@ SLASH_QUESTIETRACE2 = "/qlt"
 ---@param event string
 ---@param ... any
 local function OnEvent(_, event, ...)
-  -- 1. Initialization (unchanged)
-  if event == "VARIABLES_LOADED" then
+  -- 1. Initialize before login dumps and auto-start; VARIABLES_LOADED may fire later.
+  if event == "PLAYER_LOGIN" then
     EnsureSavedVariables()
-    return
   end
 
   -- 2. Event filtering
@@ -649,7 +648,6 @@ end
 
 ---@type Frame
 local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("VARIABLES_LOADED")
 for i = 1, #TRACKED_EVENTS do
   ---@type boolean
   local ok = pcall(eventFrame.RegisterEvent, eventFrame, TRACKED_EVENTS[i])

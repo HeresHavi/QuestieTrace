@@ -266,7 +266,7 @@ local function TestGreetingRestart()
 end
 
 local function TestSessionContract()
-  local runtime = NewRuntime({})
+  local runtime = NewRuntime({ "Modules/Export/ExportReminder.lua" })
   ---@type SessionRecord
   local legacy = {
     schemaVersion = 10, name = "legacy", startedAt = 0, startedAtPrecise = 0,
@@ -275,7 +275,7 @@ local function TestSessionContract()
   local env = runtime.env
   local settings = env.QuestieTrace.settings
   env.QuestieTraceCharacter.sessions[1] = legacy
-  SendEvent(runtime, "VARIABLES_LOADED")
+  SendEvent(runtime, "PLAYER_LOGIN")
   assert(env.QuestieTrace.settings == settings,
     "Recording contract must not reset existing settings")
 
@@ -570,8 +570,30 @@ local function TestSaveCaptureClearsCurrentSession()
   assert(runtime.env.QuestieTraceCharacter.sessions[1] ~= nil, "Session must be moved to sessions array")
 end
 
-local function TestRecoverCurrentSessionOnVariablesLoaded()
-  local runtime = NewRuntime({})
+local function TestLoginInitializesFreshCharacter(variablesLoadedFirst)
+  local runtime = NewRuntime({ "Modules/Export/ExportReminder.lua" })
+  local env = runtime.env
+  env.QuestieTraceCharacter = nil
+  local settings = env.QuestieTrace.settings
+
+  if variablesLoadedFirst then SendEvent(runtime, "VARIABLES_LOADED") end
+  SendEvent(runtime, "PLAYER_LOGIN")
+
+  local session = Session(runtime)
+  assert(env.QuestieTrace.settings == settings, "Login must preserve account settings and consent")
+  assert(runtime.core.GetCaptureState() == "running", "Login must auto-start on a fresh character with account consent")
+  assert(env.QuestieTraceCharacter.currentSession == session, "Login must link the live session to the character database")
+  assert(session.events[1].e == "PLAYER_LOGIN", "PLAYER_LOGIN must be the first recorded event")
+  assert(#env.QuestieTraceCharacter.sessions == 0, "Login must not save the new capture")
+
+  if not variablesLoadedFirst then SendEvent(runtime, "VARIABLES_LOADED") end
+  assert(runtime.core.GetCaptureState() == "running", "Late VARIABLES_LOADED must not finalize an active capture")
+  assert(env.QuestieTraceCharacter.currentSession == session, "Late VARIABLES_LOADED must preserve the live session")
+  assert(#env.QuestieTraceCharacter.sessions == 0, "Late VARIABLES_LOADED must not save the active capture")
+end
+
+local function TestRecoverCurrentSessionOnLogin()
+  local runtime = NewRuntime({ "Modules/Export/ExportReminder.lua" })
   local env = runtime.env
   -- Simulate a leftover currentSession from a previous load (e.g. /reload without Save)
   local leftover = {
@@ -590,8 +612,8 @@ local function TestRecoverCurrentSessionOnVariablesLoaded()
   -- Set virtual time to a value > startedAt so duration is non-negative
   runtime.now = 150
 
-  -- Trigger VARIABLES_LOADED which calls EnsureSavedVariables and auto-finalizes the recovered session
-  SendEvent(runtime, "VARIABLES_LOADED")
+  -- Login finalizes the recovered session before starting a new capture.
+  SendEvent(runtime, "PLAYER_LOGIN")
 
   -- The recovered session should now be in sessions[] (auto-finalized), not in capture.session
   assert(#env.QuestieTraceCharacter.sessions == 1, "Recovered session must be auto-finalized into sessions[]")
@@ -600,8 +622,10 @@ local function TestRecoverCurrentSessionOnVariablesLoaded()
   assert(recovered.stoppedAt == 150, "Recovery must fill stoppedAt with current virtual time")
   assert(recovered.duration == 50, "Recovery must compute correct non-negative duration (150 - 100)")
   assert(recovered.durationPrecise == 50, "Recovery must compute correct durationPrecise")
-  assert(runtime.core.GetCaptureState() == "idle", "After recovery finalization, state must be idle")
-  assert(env.QuestieTraceCharacter.currentSession == nil, "currentSession must be cleared after finalization")
+  assert(runtime.core.GetCaptureState() == "running", "Login must start a new capture after recovery")
+  local current = env.QuestieTraceCharacter.currentSession
+  assert(current ~= nil and current ~= recovered, "Login must replace the recovered session with a new capture")
+  assert(current.events[1].e == "PLAYER_LOGIN", "The new capture must record PLAYER_LOGIN first")
 end
 
 local function TestRecoverCurrentSessionDiscardedWhenConsentDeclined()
@@ -623,7 +647,7 @@ local function TestRecoverCurrentSessionDiscardedWhenConsentDeclined()
   env.QuestieTrace.settings.dataCollectionConsent = false
 
   runtime.now = 150
-  SendEvent(runtime, "VARIABLES_LOADED")
+  SendEvent(runtime, "PLAYER_LOGIN")
 
   -- Session should be discarded, not saved
   assert(#env.QuestieTraceCharacter.sessions == 0, "Recovered session must not be saved when consent is declined")
@@ -650,7 +674,7 @@ local function TestRecoverCurrentSessionDiscardedWhenConsentUndecided()
   env.QuestieTrace.settings.dataCollectionConsent = nil
 
   runtime.now = 150
-  SendEvent(runtime, "VARIABLES_LOADED")
+  SendEvent(runtime, "PLAYER_LOGIN")
 
   -- Session should be discarded, not saved
   assert(#env.QuestieTraceCharacter.sessions == 0, "Recovered session must not be saved when consent is undecided")
@@ -690,7 +714,6 @@ end
 
 local function TestShareReminderNotDueWithoutSavedSessions()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   assert(runtime.core.IsShareDue() == false, "No saved sessions means nothing is shareable yet")
 
   -- A live, unsaved capture with no events yet is not in the export payload and must stay silent.
@@ -700,7 +723,6 @@ end
 
 local function TestShareReminderDueWithUnsavedLiveSessionEvents()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
 
   -- Once the live session has recorded events, it must be shareable even
   -- though nothing has been saved yet -- a crash shouldn't lose hours of
@@ -722,7 +744,7 @@ local function TestShareReminderSilentOnFreshCharacterLogin()
   local messages = CaptureChat(runtime)
   -- Consent is account-wide, so a brand-new alt already has it granted, and
   -- capture starts automatically.
-  SendEvent(runtime, "VARIABLES_LOADED")
+  runtime.env.QuestieTraceCharacter = nil
 
   -- Auto-start records PLAYER_LOGIN into the live session immediately.
   SendEvent(runtime, "PLAYER_LOGIN")
@@ -739,7 +761,6 @@ end
 
 local function TestShareReminderDueAfterSave()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   runtime.core.StartCapture("session 1")
   local session = runtime.env.QuestieTraceCharacter.currentSession
   session.events[#session.events + 1] = { t = 0, tp = 0, e = "QUEST_ACCEPTED", a = { n = 0 } }
@@ -749,7 +770,6 @@ end
 
 local function TestShareReminderSuppressedAfterExportOpened()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   SaveSessions(runtime, 1)
   runtime.core.MarkExportOpened()
   assert(runtime.core.IsShareDue() == false, "Opening the export window must pause reminders")
@@ -757,7 +777,6 @@ end
 
 local function TestShareReminderResumesAfterNewSave()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   runtime.core.StartCapture("session 1")
   local session = runtime.env.QuestieTraceCharacter.currentSession
   session.events[#session.events + 1] = { t = 0, tp = 0, e = "QUEST_ACCEPTED", a = { n = 0 } }
@@ -772,7 +791,6 @@ end
 
 local function TestShareReminderSurvivesSessionDeletion()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   local env = runtime.env
 
   -- Save some sessions with meaningful events, then simulate the player
@@ -815,7 +833,6 @@ end
 local function TestShareReminderFiresOnLoginAndAtThirtyMinutes()
   local runtime = NewRuntime(REMINDER_FILES)
   local messages = CaptureChat(runtime)
-  SendEvent(runtime, "VARIABLES_LOADED")
   runtime.core.StartCapture("session 1")
   local session = runtime.env.QuestieTraceCharacter.currentSession
   session.events[#session.events + 1] = { t = 0, tp = 0, e = "QUEST_ACCEPTED", a = { n = 0 } }
@@ -1648,7 +1665,9 @@ local tests = {
   { name = "export serialization round-trips", run = TestExportSerializationRoundTrips },
   { name = "currentSession linked on StartCapture", run = TestCurrentSessionLinkedOnStartCapture },
   { name = "SaveCapture clears currentSession", run = TestSaveCaptureClearsCurrentSession },
-  { name = "recover currentSession on VARIABLES_LOADED and auto-finalize", run = TestRecoverCurrentSessionOnVariablesLoaded },
+  { name = "fresh character login before VARIABLES_LOADED", run = function() TestLoginInitializesFreshCharacter(false) end },
+  { name = "fresh character login after VARIABLES_LOADED", run = function() TestLoginInitializesFreshCharacter(true) end },
+  { name = "recover currentSession on login before auto-start", run = TestRecoverCurrentSessionOnLogin },
   { name = "recover currentSession discarded when consent declined", run = TestRecoverCurrentSessionDiscardedWhenConsentDeclined },
   { name = "recover currentSession discarded when consent undecided", run = TestRecoverCurrentSessionDiscardedWhenConsentUndecided },
   { name = "consent undecided shows prompt and does not auto-start", run = TestConsentUndecidedShowsPromptAndDoesNotAutoStart },
