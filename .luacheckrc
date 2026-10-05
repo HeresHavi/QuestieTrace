@@ -2305,6 +2305,7 @@ globals = {
     "forceinsecure",
     "geterrorhandler",
     "hooksecurefunc",
+    "issecretvalue",
     "issecure",
     "issecurevariable",
     "scrub",

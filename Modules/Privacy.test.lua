@@ -58,6 +58,15 @@ describe("Privacy", function()
   end)
 
   describe("ParseGUIDKind", function()
+    it("rejects restricted GUIDs without replacing deterministic privacy classification", function()
+      local guid = "Creature-0-1-1-1-123-000001"
+      env.issecretvalue = function(value) return value == guid end
+      assert.is_nil(Core.ParseGUIDKind(guid))
+      assert.are.equal("player", Core.ParseGUIDKind("Player-1-000001"))
+      env.issecretvalue = function() return false end
+      assert.are.equal("npc", Core.ParseGUIDKind(guid))
+    end)
+
     it("should classify Player- prefix as player", function()
       assert.are.equal("player", Core.ParseGUIDKind("Player-4618-0053656F"))
     end)
@@ -359,6 +368,17 @@ describe("GetPrivacyNameSet", function()
   end)
 
   describe("SanitizeChatMsgArgs", function()
+    it("discards a restricted sender GUID while preserving usable event data", function()
+      local guid = "Creature-0-1-1-1-123-000001"
+      env.issecretvalue = function(value) return value == guid end
+      local args = {n = 12, [1] = "An item was received.", [12] = guid}
+      local sanitized = Core.SanitizeChatMsgArgs(args)
+      assert.is_nil(sanitized[12])
+      assert.are.equal(args[1], sanitized[1])
+      assert.are.equal(12, sanitized.n)
+      assert.are.equal(guid, args[12])
+    end)
+
     it("should strip playerName (arg 2) and playerName2 (arg 5)", function()
       env.UnitName = function() return nil end
       env.IsInGroup = function() return false end
