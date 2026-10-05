@@ -266,7 +266,7 @@ local function TestGreetingRestart()
 end
 
 local function TestSessionContract()
-  local runtime = NewRuntime({})
+  local runtime = NewRuntime({ "Modules/Export/ExportReminder.lua" })
   ---@type SessionRecord
   local legacy = {
     schemaVersion = 10, name = "legacy", startedAt = 0, startedAtPrecise = 0,
@@ -275,7 +275,7 @@ local function TestSessionContract()
   local env = runtime.env
   local settings = env.QuestieTrace.settings
   env.QuestieTraceCharacter.sessions[1] = legacy
-  SendEvent(runtime, "VARIABLES_LOADED")
+  SendEvent(runtime, "PLAYER_LOGIN")
   assert(env.QuestieTrace.settings == settings,
     "Recording contract must not reset existing settings")
 
@@ -570,8 +570,30 @@ local function TestSaveCaptureClearsCurrentSession()
   assert(runtime.env.QuestieTraceCharacter.sessions[1] ~= nil, "Session must be moved to sessions array")
 end
 
-local function TestRecoverCurrentSessionOnVariablesLoaded()
-  local runtime = NewRuntime({})
+local function TestLoginInitializesFreshCharacter(variablesLoadedFirst)
+  local runtime = NewRuntime({ "Modules/Export/ExportReminder.lua" })
+  local env = runtime.env
+  env.QuestieTraceCharacter = nil
+  local settings = env.QuestieTrace.settings
+
+  if variablesLoadedFirst then SendEvent(runtime, "VARIABLES_LOADED") end
+  SendEvent(runtime, "PLAYER_LOGIN")
+
+  local session = Session(runtime)
+  assert(env.QuestieTrace.settings == settings, "Login must preserve account settings and consent")
+  assert(runtime.core.GetCaptureState() == "running", "Login must auto-start on a fresh character with account consent")
+  assert(env.QuestieTraceCharacter.currentSession == session, "Login must link the live session to the character database")
+  assert(session.events[1].e == "PLAYER_LOGIN", "PLAYER_LOGIN must be the first recorded event")
+  assert(#env.QuestieTraceCharacter.sessions == 0, "Login must not save the new capture")
+
+  if not variablesLoadedFirst then SendEvent(runtime, "VARIABLES_LOADED") end
+  assert(runtime.core.GetCaptureState() == "running", "Late VARIABLES_LOADED must not finalize an active capture")
+  assert(env.QuestieTraceCharacter.currentSession == session, "Late VARIABLES_LOADED must preserve the live session")
+  assert(#env.QuestieTraceCharacter.sessions == 0, "Late VARIABLES_LOADED must not save the active capture")
+end
+
+local function TestRecoverCurrentSessionOnLogin()
+  local runtime = NewRuntime({ "Modules/Export/ExportReminder.lua" })
   local env = runtime.env
   -- Simulate a leftover currentSession from a previous load (e.g. /reload without Save)
   local leftover = {
@@ -590,8 +612,8 @@ local function TestRecoverCurrentSessionOnVariablesLoaded()
   -- Set virtual time to a value > startedAt so duration is non-negative
   runtime.now = 150
 
-  -- Trigger VARIABLES_LOADED which calls EnsureSavedVariables and auto-finalizes the recovered session
-  SendEvent(runtime, "VARIABLES_LOADED")
+  -- Login finalizes the recovered session before starting a new capture.
+  SendEvent(runtime, "PLAYER_LOGIN")
 
   -- The recovered session should now be in sessions[] (auto-finalized), not in capture.session
   assert(#env.QuestieTraceCharacter.sessions == 1, "Recovered session must be auto-finalized into sessions[]")
@@ -600,8 +622,10 @@ local function TestRecoverCurrentSessionOnVariablesLoaded()
   assert(recovered.stoppedAt == 150, "Recovery must fill stoppedAt with current virtual time")
   assert(recovered.duration == 50, "Recovery must compute correct non-negative duration (150 - 100)")
   assert(recovered.durationPrecise == 50, "Recovery must compute correct durationPrecise")
-  assert(runtime.core.GetCaptureState() == "idle", "After recovery finalization, state must be idle")
-  assert(env.QuestieTraceCharacter.currentSession == nil, "currentSession must be cleared after finalization")
+  assert(runtime.core.GetCaptureState() == "running", "Login must start a new capture after recovery")
+  local current = env.QuestieTraceCharacter.currentSession
+  assert(current ~= nil and current ~= recovered, "Login must replace the recovered session with a new capture")
+  assert(current.events[1].e == "PLAYER_LOGIN", "The new capture must record PLAYER_LOGIN first")
 end
 
 local function TestRecoverCurrentSessionDiscardedWhenConsentDeclined()
@@ -623,7 +647,7 @@ local function TestRecoverCurrentSessionDiscardedWhenConsentDeclined()
   env.QuestieTrace.settings.dataCollectionConsent = false
 
   runtime.now = 150
-  SendEvent(runtime, "VARIABLES_LOADED")
+  SendEvent(runtime, "PLAYER_LOGIN")
 
   -- Session should be discarded, not saved
   assert(#env.QuestieTraceCharacter.sessions == 0, "Recovered session must not be saved when consent is declined")
@@ -650,7 +674,7 @@ local function TestRecoverCurrentSessionDiscardedWhenConsentUndecided()
   env.QuestieTrace.settings.dataCollectionConsent = nil
 
   runtime.now = 150
-  SendEvent(runtime, "VARIABLES_LOADED")
+  SendEvent(runtime, "PLAYER_LOGIN")
 
   -- Session should be discarded, not saved
   assert(#env.QuestieTraceCharacter.sessions == 0, "Recovered session must not be saved when consent is undecided")
@@ -690,7 +714,6 @@ end
 
 local function TestShareReminderNotDueWithoutSavedSessions()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   assert(runtime.core.IsShareDue() == false, "No saved sessions means nothing is shareable yet")
 
   -- A live, unsaved capture with no events yet is not in the export payload and must stay silent.
@@ -700,7 +723,6 @@ end
 
 local function TestShareReminderDueWithUnsavedLiveSessionEvents()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
 
   -- Once the live session has recorded events, it must be shareable even
   -- though nothing has been saved yet -- a crash shouldn't lose hours of
@@ -722,7 +744,7 @@ local function TestShareReminderSilentOnFreshCharacterLogin()
   local messages = CaptureChat(runtime)
   -- Consent is account-wide, so a brand-new alt already has it granted, and
   -- capture starts automatically.
-  SendEvent(runtime, "VARIABLES_LOADED")
+  runtime.env.QuestieTraceCharacter = nil
 
   -- Auto-start records PLAYER_LOGIN into the live session immediately.
   SendEvent(runtime, "PLAYER_LOGIN")
@@ -739,7 +761,6 @@ end
 
 local function TestShareReminderDueAfterSave()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   runtime.core.StartCapture("session 1")
   local session = runtime.env.QuestieTraceCharacter.currentSession
   session.events[#session.events + 1] = { t = 0, tp = 0, e = "QUEST_ACCEPTED", a = { n = 0 } }
@@ -749,7 +770,6 @@ end
 
 local function TestShareReminderSuppressedAfterExportOpened()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   SaveSessions(runtime, 1)
   runtime.core.MarkExportOpened()
   assert(runtime.core.IsShareDue() == false, "Opening the export window must pause reminders")
@@ -757,7 +777,6 @@ end
 
 local function TestShareReminderResumesAfterNewSave()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   runtime.core.StartCapture("session 1")
   local session = runtime.env.QuestieTraceCharacter.currentSession
   session.events[#session.events + 1] = { t = 0, tp = 0, e = "QUEST_ACCEPTED", a = { n = 0 } }
@@ -772,7 +791,6 @@ end
 
 local function TestShareReminderSurvivesSessionDeletion()
   local runtime = NewRuntime(REMINDER_FILES)
-  SendEvent(runtime, "VARIABLES_LOADED")
   local env = runtime.env
 
   -- Save some sessions with meaningful events, then simulate the player
@@ -815,7 +833,6 @@ end
 local function TestShareReminderFiresOnLoginAndAtThirtyMinutes()
   local runtime = NewRuntime(REMINDER_FILES)
   local messages = CaptureChat(runtime)
-  SendEvent(runtime, "VARIABLES_LOADED")
   runtime.core.StartCapture("session 1")
   local session = runtime.env.QuestieTraceCharacter.currentSession
   session.events[#session.events + 1] = { t = 0, tp = 0, e = "QUEST_ACCEPTED", a = { n = 0 } }
@@ -1631,6 +1648,143 @@ local function TestMerchantEmptyVendor()
     "No item streams should exist for empty vendor")
 end
 
+local function TestQuestPOTracker()
+  local runtime = NewRuntime({ "Modules/Trackers/QuestPOI.lua" })
+  local env = runtime.env
+
+  -- Mock C_QuestLog.GetMapForQuestPOIs (returns starting map for POIs)
+  -- Mock C_QuestLog.GetQuestsOnMap (returns POIs for a given map)
+  env.C_QuestLog = {
+    GetMapForQuestPOIs = function()
+      return 1453 -- Stormwind
+    end,
+    ---@param uiMapID number
+    GetQuestsOnMap = function(uiMapID)
+      if uiMapID == 1453 then
+        return {
+          {
+            questID = 12345,
+            mapID = 1453,
+            x = 0.5,
+            y = 0.5,
+            isQuestStart = true,
+            isDaily = false,
+            isCombatAllyQuest = false,
+            isMeta = false,
+            inProgress = true,
+            isMapIndicatorQuest = false,
+            numObjectives = 2,
+            childDepth = 0,
+          },
+        }
+      end
+      return {}
+    end
+  }
+
+  runtime.core.StartCapture("quest poi test")
+  local session = Session(runtime)
+  local functions = session.functions
+
+  -- Verify C_QuestLog.GetQuestsOnMap stream exists
+  assert(functions["C_QuestLog.GetQuestsOnMap"], "C_QuestLog.GetQuestsOnMap stream must exist")
+  assert(functions["C_QuestLog.GetQuestsOnMap"][1453], "C_QuestLog.GetQuestsOnMap[1453] stream must exist")
+  assert(#functions["C_QuestLog.GetQuestsOnMap"][1453] >= 1, "C_QuestLog.GetQuestsOnMap[1453] must have entry")
+
+  local pois = functions["C_QuestLog.GetQuestsOnMap"][1453][1].v
+  assert(#pois == 1, "Must have 1 POI")
+  assert(pois[1].questID == 12345, "POI questID must match")
+  assert(pois[1].x == 0.5, "POI x must match")
+  assert(pois[1].y == 0.5, "POI y must match")
+  assert(pois[1].isQuestStart == true, "POI isQuestStart must be true")
+end
+
+local function TestQuestPOTrackerQuestPOIUpdate()
+  local runtime = NewRuntime({ "Modules/Trackers/QuestPOI.lua" })
+  local env = runtime.env
+
+  -- Track whether POI data should be "updated"
+  local useUpdatedPOI = false
+
+  env.C_QuestLog = {
+    GetMapForQuestPOIs = function()
+      return 1453 -- Stormwind
+    end,
+    ---@param uiMapID number
+    GetQuestsOnMap = function(uiMapID)
+      if uiMapID == 1453 then
+        if useUpdatedPOI then
+          return {
+            {
+              questID = 67890,
+              questTagType = 1,
+              numObjectives = 3,
+              mapID = 1453,
+              x = 0.7,
+              y = 0.8,
+              isQuestStart = false,
+              isDaily = true,
+              isCombatAllyQuest = false,
+              isMeta = false,
+              inProgress = false,
+              isMapIndicatorQuest = true,
+              childDepth = 0,
+            },
+          }
+        end
+        return {
+          {
+            questID = 12345,
+            questTagType = 0,
+            numObjectives = 2,
+            mapID = 1453,
+            x = 0.5,
+            y = 0.5,
+            isQuestStart = true,
+            isDaily = false,
+            isCombatAllyQuest = false,
+            isMeta = false,
+            inProgress = true,
+            isMapIndicatorQuest = false,
+            childDepth = 0,
+          },
+        }
+      end
+      return {}
+    end
+  }
+
+  runtime.core.StartCapture("quest poi update test")
+  local session = Session(runtime)
+  local functions = session.functions
+
+  -- Verify initial POI recorded
+  assert(functions["C_QuestLog.GetQuestsOnMap"][1453], "Initial stream must exist")
+  assert(#functions["C_QuestLog.GetQuestsOnMap"][1453] == 1, "Must have 1 entry initially")
+  assert(functions["C_QuestLog.GetQuestsOnMap"][1453][1].v[1].questID == 12345, "Initial POI must match")
+
+  -- Now change the POI data and send QUEST_POI_UPDATE
+  useUpdatedPOI = true
+  SendEvent(runtime, "QUEST_POI_UPDATE")
+
+  -- Re-fetch session after event
+  session = Session(runtime)
+  functions = session.functions
+
+  -- Verify updated POI was recorded as a new entry
+  assert(functions["C_QuestLog.GetQuestsOnMap"][1453], "Stream must still exist")
+  assert(#functions["C_QuestLog.GetQuestsOnMap"][1453] == 2, "Must have 2 entries after update, got " .. #functions["C_QuestLog.GetQuestsOnMap"][1453])
+
+  local updatedPOI = functions["C_QuestLog.GetQuestsOnMap"][1453][2].v
+  assert(#updatedPOI == 1, "Must have 1 updated POI")
+  assert(updatedPOI[1].questID == 67890, "Updated POI questID must match, got " .. updatedPOI[1].questID)
+  assert(updatedPOI[1].x == 0.7, "Updated POI x must match")
+  assert(updatedPOI[1].y == 0.8, "Updated POI y must match")
+  assert(updatedPOI[1].isQuestStart == false, "Updated POI isQuestStart must be false")
+  assert(updatedPOI[1].isDaily == true, "Updated POI isDaily must be true")
+  assert(updatedPOI[1].isMapIndicatorQuest == true, "Updated POI isMapIndicatorQuest must be true")
+end
+
 -- These tests model restriction flags; native secret-value enforcement is verified in the game client.
 local function TestRestrictedUnitIdentityDoesNotInterruptCapture()
   local runtime = NewRuntime({ "Modules/Trackers/UnitInteraction.lua" })
@@ -1716,7 +1870,9 @@ local tests = {
   { name = "export serialization round-trips", run = TestExportSerializationRoundTrips },
   { name = "currentSession linked on StartCapture", run = TestCurrentSessionLinkedOnStartCapture },
   { name = "SaveCapture clears currentSession", run = TestSaveCaptureClearsCurrentSession },
-  { name = "recover currentSession on VARIABLES_LOADED and auto-finalize", run = TestRecoverCurrentSessionOnVariablesLoaded },
+  { name = "fresh character login before VARIABLES_LOADED", run = function() TestLoginInitializesFreshCharacter(false) end },
+  { name = "fresh character login after VARIABLES_LOADED", run = function() TestLoginInitializesFreshCharacter(true) end },
+  { name = "recover currentSession on login before auto-start", run = TestRecoverCurrentSessionOnLogin },
   { name = "recover currentSession discarded when consent declined", run = TestRecoverCurrentSessionDiscardedWhenConsentDeclined },
   { name = "recover currentSession discarded when consent undecided", run = TestRecoverCurrentSessionDiscardedWhenConsentUndecided },
   { name = "consent undecided shows prompt and does not auto-start", run = TestConsentUndecidedShowsPromptAndDoesNotAutoStart },
@@ -1763,6 +1919,8 @@ local tests = {
   { name = "Merchant close probes known indices", run = TestMerchantCloseProbesKnownIndices },
   { name = "Merchant records changed items", run = TestMerchantRecordsChangedItems },
   { name = "Merchant empty vendor", run = TestMerchantEmptyVendor },
+  { name = "quest poi tracker records quest log pois", run = TestQuestPOTracker },
+  { name = "quest poi tracker handles QUEST_POI_UPDATE", run = TestQuestPOTrackerQuestPOIUpdate },
 }
 
 local failures = 0

@@ -109,8 +109,8 @@ local linkHandlerRegistered = false
 --- Read the per-character reminder state, initializing missing fields.
 ---
 --- Returns a detached table when SavedVariables are not ready yet so callers
---- never fail; in practice EnsureSavedVariables runs on VARIABLES_LOADED,
---- well before the first check.
+--- never fail; in practice EnsureSavedVariables runs at the start of PLAYER_LOGIN,
+--- before reminders are scheduled.
 ---@return ReminderState
 local function GetReminderState()
   ---@type table?
