@@ -1631,8 +1631,76 @@ local function TestMerchantEmptyVendor()
     "No item streams should exist for empty vendor")
 end
 
+-- These tests model restriction flags; native secret-value enforcement is verified in the game client.
+local function TestRestrictedUnitIdentityDoesNotInterruptCapture()
+  local runtime = NewRuntime({ "Modules/Trackers/UnitInteraction.lua" })
+  local restrictedGuid = "Creature-0-1-1-1-123-000001"
+  local npcGuid = "Creature-0-1-1-1-456-000002"
+  local targetGuid, restricted = restrictedGuid, true
+  runtime.env.issecretvalue = function(value) return restricted and value == restrictedGuid end
+  runtime.env.UnitGUID = function(token)
+    if token == "target" then return targetGuid end
+    if token == "npc" then return npcGuid end
+    if token == "questnpc" then return "Player-1-000001" end
+  end
+  runtime.env.UnitName = function(token)
+    if token == "target" then
+      assert(not restricted, "A restricted unit's name must not be sampled")
+      if targetGuid then return "Creature" end
+    elseif token == "npc" then return "Quest giver" end
+  end
+  runtime.env.C_GossipInfo = {
+    GetAvailableQuests = function() return {{questID = 123}} end,
+    GetActiveQuests = function() return {} end,
+  }
+  runtime.core.StartCapture("restricted identity")
+  SendEvent(runtime, "GOSSIP_SHOW")
+  local functions = Session(runtime).functions
+  assert(#functions.UnitGUID.target == 0 and #functions.UnitName.target == 0, "Restricted identity must not be recorded")
+  assert(#functions.UnitGUID.questnpc == 0, "Readable player identity must still be filtered")
+  assert(functions.UnitGUID.npc[1].v == npcGuid, "Other readable units must still be recorded")
+  assert(functions["C_GossipInfo.GetAvailableQuests"][1].v[1].questID == 123, "Gossip recording must continue")
+  restricted = false
+  AdvanceTo(runtime, 1)
+  SendEvent(runtime, "PLAYER_TARGET_CHANGED")
+  assert(#functions.UnitGUID.target == 1 and functions.UnitGUID.target[1].v == restrictedGuid, "Readable identity must resume recording")
+  assert(functions.UnitName.target[1].v[1] == "Creature", "Readable name must resume recording")
+  restricted = true
+  AdvanceTo(runtime, 2)
+  SendEvent(runtime, "PLAYER_TARGET_CHANGED")
+  assert(#functions.UnitGUID.target == 1 and #functions.UnitName.target == 1, "A restriction must not invent a nil observation")
+  targetGuid, restricted = nil, false
+  AdvanceTo(runtime, 3)
+  SendEvent(runtime, "PLAYER_TARGET_CHANGED")
+  assert(#functions.UnitGUID.target == 2 and functions.UnitGUID.target[2].v == nil, "A real nil observation must still be recorded")
+end
+
+local function TestRestrictedLootSourcePreservesOtherLootData()
+  local runtime = NewRuntime({ "Modules/Trackers/Loot.lua" })
+  local guid = "Creature-0-1-1-1-123-000001"
+  local restricted = true
+  runtime.env.issecretvalue = function(value) return restricted and value == guid end
+  runtime.env.GetNumLootItems = function() return 1 end
+  runtime.env.GetLootSlotInfo = function() return "icon", "Item", 1, 0, 1, false, false, 0, true end
+  runtime.env.GetLootSourceInfo = function() return guid, 1 end
+  runtime.env.GetLootSlotLink = function() return "itemlink" end
+  runtime.env.GetLootSlotType = function() return 1 end
+  runtime.core.StartCapture("restricted loot source")
+  SendEvent(runtime, "LOOT_READY")
+  local functions = Session(runtime).functions
+  assert(#functions.GetLootSourceInfo[1] == 0, "Restricted loot source must be discarded")
+  assert(functions.GetLootSlotLink[1][1].v == "itemlink", "The item link must remain usable")
+  assert(functions.GetLootSlotInfo[1][1].v[2] == "Item", "Other item information must remain usable")
+  restricted = false
+  AdvanceTo(runtime, 1)
+  SendEvent(runtime, "LOOT_READY")
+  assert(functions.GetLootSourceInfo[1][1].v[1] == guid, "Readable source must resume recording")
+end
+
 ---@type { name: string, run: fun() }[]
 local tests = {
+  { name = "restricted unit identity does not interrupt capture", run = TestRestrictedUnitIdentityDoesNotInterruptCapture },
+  { name = "restricted loot source preserves other loot data", run = TestRestrictedLootSourcePreservesOtherLootData },
   { name = "greeting retries unsettled titles", run = function() TestGreetingRetry("stale") end },
   { name = "greeting retries failed calls", run = function() TestGreetingRetry("error") end },
   { name = "greeting close cancels delayed samples", run = TestGreetingClose },

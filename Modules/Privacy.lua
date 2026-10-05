@@ -27,7 +27,8 @@ local GUID_KIND_PATTERNS = {
 ---@param guid any
 ---@return "player"|"npc"|"object"|"item"|nil kind
 function Core.ParseGUIDKind(guid)
-  if type(guid) ~= "string" then return nil end
+  -- Restricted identity cannot be classified. Readable values still require the explicit prefix allowlist below.
+  if (issecretvalue and issecretvalue(guid)) or type(guid) ~= "string" then return nil end
   for i = 1, #GUID_KIND_PATTERNS do
     ---@type string, "player"|"npc"|"object"|"item"
     local pattern, kind = GUID_KIND_PATTERNS[i][1], GUID_KIND_PATTERNS[i][2]

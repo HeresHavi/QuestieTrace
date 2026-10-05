@@ -122,6 +122,10 @@ observations, not synthetic close/removal resets. Explicit synthetic/derived
 streams retain their documented semantics. Failed calls produce no sample; the
 last observation is not proof that an API still returns that value later.
 
+Restricted GUIDs cannot pass privacy classification and are omitted, along with
+their associated unit names. They are not replaced with synthetic nil observations;
+other readable observations continue to be recorded.
+
 Missing markers mean legacy/unknown semantics, even for schema v9. Those sessions
 may contain synthetic resets or normalized returns. Consumers must check for the
 supported value `1` before applying the observed-only guarantee; other versions

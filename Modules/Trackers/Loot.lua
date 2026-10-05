@@ -154,7 +154,7 @@ local function IsLootSourceAllowed(source)
   for i = 1, source.n or 0, 2 do
     ---@type any
     local guid = source[i]
-    if guid ~= nil then
+    if type(guid) ~= "nil" then
       ---@type "player"|"npc"|"object"|"item"|nil
       local kind = Core.ParseGUIDKind(guid)
       if kind ~= "npc" and kind ~= "object" and kind ~= "item" then
