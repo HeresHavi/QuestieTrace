@@ -75,7 +75,7 @@ local function SampleAll(t, tp)
       ---@type "player"|"npc"|"object"|"item"|nil
       local kind = Core.ParseGUIDKind(guid)
       ---@type boolean
-      local allowed = type(guid) == "nil" or kind == "npc" or kind == "object" or kind == "item"
+      local allowed = guid == nil or kind == "npc" or kind == "object" or kind == "item"
 
       if allowed then
         ---@type FunctionStreamEntry[]
